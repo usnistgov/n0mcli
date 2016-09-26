@@ -46,22 +46,20 @@
 
 */
 
+#ifndef _SE240METER_H_
+#define _SE240METER_H_
 
-
-#ifndef __SE240METER_H
-#define __SE240METER_H
+#include <stdint.h>
+#include <time.h>
+#include <sys/time.h>
 
 //=========================================================================
 // defines and typedefs
 //=========================================================================
 //
 //
-#ifdef __WIN32__
-	#define MSEC_PER_TIC 100
-#endif
+#define MSEC_PER_TIC 100
 
-#define MAXTIMER	( ((TIME_T)1)<<(TIMETBITS-1)-1) 
-#define MAXTIMERVAL ((TIME_T)(MAXTIMER-MAXTIMER/10))
 
 #define TABLE_NOT_FOUND 0xff
 
@@ -99,11 +97,11 @@ typedef enum {
 } DATALOCATION;			// where table data is stored
   
 typedef struct {
-	BYTE tableID;			// table number
-	BYTE location;			// storage location
-	BOOL canwrite;			// enabled to write
-	UINT16 size;			// size of table
-	BYTE FAR * tabledata;	// pointer to the data
+	uint8_t tableID;			// table number
+	uint8_t location;			// storage location
+	int canwrite;			// enabled to write
+	uint16_t size;			// size of table
+	uint8_t * tabledata;	// pointer to the data
 } typeTableDef;  
 
 
@@ -129,22 +127,22 @@ typedef struct {
 //
 
 
-void InitializeComm( INITIALIZE_MYPLATFORM what );
-void TerminateComm(void);
+int InitializeComm( INITIALIZE_MYPLATFORM what );
+void TerminateComm(int fd);
 
-UINT16 SetTxBuffer(PSEM_FRAME_FMT fmt, BYTE servicecode, BYTE FAR * data, UINT16 length, PBYTE buffer, UINT16 sizebuffer);
-void SetN0MTimer (TIME_T *t, TIME_T delt);
-BOOL CheckN0MTimer (TIME_T *t);
-TIME_T GetN0MTimer (TIME_T *t);
+uint16_t SetTxBuffer(PSEM_FRAME_FMT fmt, uint8_t servicecode, uint8_t * data, uint16_t length, uint8_t * buffer, uint16_t sizebuffer);
+void SetN0MTimer (time_t *t, time_t delt);
+int CheckN0MTimer (time_t *t);
+time_t GetN0MTimer (time_t *t);
 
 
-void UpdateTxState();
-void UpdateRxState();
-BOOL DoPSEMApp();
-BYTE LookUpTableRcrd(UINT16 tableID);
-BOOL DoPSEMClientApp();
+int UpdateTxState(int fd);
+void UpdateRxState(int fd);
+int DoPSEMApp();
+uint8_t LookUpTableRcrd(uint16_t tableID);
+int DoPSEMClientApp();
 
-BYTE DoRead(typeTableDef *pT, UINT16 offset, UINT16 count);
-BYTE DoWrite(typeTableDef *pT, UINT16 offset, UINT16 count, PBYTE data);
+uint8_t DoRead(typeTableDef *pT, uint16_t offset, uint16_t count);
+uint8_t DoWrite(typeTableDef *pT, uint16_t offset, uint16_t count, uint8_t * data);
 
 #endif

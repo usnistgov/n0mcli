@@ -45,7 +45,6 @@
 	===========================================================================
 	=====	Compilation options
 	===========================================================================
-	#define __WIN32__      Define to include WIN32API specific code (including main())
 
 
 	===========================================================================
@@ -74,8 +73,8 @@
 	<PACKET>		::= <STP> <RESERVED> <CTRL> <SEQ_NBR> <LENGTH> <DATA> <CRC>
 	<PULSETABLE>	::= [<LENGTH>] <DATA> <CRC>
 	<STP>			::= EEH		Start of packet character
-	<RESERVED>		::= <BYTE>	Reserved for manufacturer or utility use.(Default 0x00)
-	<CTRL>			::= <BYTE>	Control field:
+	<RESERVED>		::= <uint8_t>	Reserved for manufacturer or utility use.(Default 0x00)
+	<CTRL>			::= <uint8_t>	Control field:
 							Bit 7. If true packet is part of segmented transmission.
 							Bit 6. If true then first of a multi-packet transmission.
 							Bit 5. Represents a toggle bit to reject duplicate packets.
@@ -83,11 +82,11 @@
 								Retransmitted packets keep the same state
 							Bits 0 to 4, Reserved
 
-	<SEQ_NBR>		::= <BYTE>	Number that is decremented by one for each new packet sent.
+	<SEQ_NBR>		::= <uint8_t>	Number that is decremented by one for each new packet sent.
 	
 	<LENGTH>		::= <WORD16>Number of bytes of data in packet
 
-	<DATA>			::= <BYTE>+	<length> number of bytes of actual packet data.(MAX 8138)
+	<DATA>			::= <uint8_t>+	<length> number of bytes of actual packet data.(MAX 8138)
 
 	<CRC>			::= <WORD16> CCITT CRC standard polynomial X16 + X12 + X5 + 1
 	
@@ -385,24 +384,28 @@
 
 */
 
-#ifdef __WIN32__
-#include <sys/time.h>
-#include "serio.h"
-#endif
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <stddef.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <time.h>
+#include <sys/time.h>
 
-#include "customtypes.h"
 #include "psem.h"
-#include "SE240mtr.h"
+#include "se240mtr.h"
 #include "diag.h"
 #include "c1219.h"
 #include "lputils.h"
 #include "xmlgen.h"
+#include "uartio.h"
+
+#include "inifile.h"
+#include "config.h"
+
+#include "rest.h"
 
 /*------------------------------------------------------------------------
 **************************   local definitions	*************************
@@ -418,22 +421,22 @@
 /*------------------------------------------------------------------------
 *********************   prototypes this module		**********************
 ------------------------------------------------------------------------*/
-BOOL DoPSEMClientApp(void);
-void UpdateTxState(void);
-void UpdateRxState(void);
+int DoPSEMClientApp(void);
+int UpdateTxState(int fd);
+void UpdateRxState(int fd);
 /*------------------------------------------------------------------------
 ************************  local Types and enums	**************************
 ------------------------------------------------------------------------*/
 
 // types used to implement test scenarios for clients
 typedef struct {
-	BYTE service;
-	BYTE data[1];
+	uint8_t service;
+	uint8_t data[1];
 } typeTestMsg;
 
 typedef struct {
-	BYTE * pData;
-	UINT16 length;
+	uint8_t * pData;
+	uint16_t length;
 	int (*pcb)(unsigned char *, int) ;	// callback routine addr or NULL
 } typeScenario;
 
@@ -461,54 +464,56 @@ typedef enum {
 //-------------------------------------
 // Transmit variables
 //-------------------------------------
-UINT16          nTxBytes;		// count of bytes to transmit
-PBYTE           pTxData;		// pointer to current transmit data byte 
-BOOL            inTx;			// currently transmitting a message
-BYTE            txAckNak;		// holds ack if waiting for transmit
-BOOL            waitForAckNak;	// set to true after transmit to wait for ACK
-BYTE            txState;		// state of TX state machine
-TIME_T          tmrWaitForAck;	// wait for ack timer
-BYTE            txBuffer[SIZETXBUF];// transmit buffer
-BOOL            haveTxMsg;		// flag says txMsg waiting
-BOOL            haveTxRetry;	// flag says retry waiting
-BOOL			haveResponse;	// flag says valid response came in
-UINT16          nTxMsg;			// number of bytes in simple message
-BYTE            txToggle;		// transmit sequence number
-PBYTE           lastTxMsg;		// save for retry
-UINT16          nLastTxMsg;		// "
-BOOL			txFail;			// flag shows failure of tx packet sequence
+uint16_t	nTxBytes;	// count of bytes to transmit
+uint8_t *	pTxData;	// pointer to current transmit data byte
+int 		inTx;		// currently transmitting a message
+uint8_t 	txAckNak;	// holds ack if waiting for transmit
+int 		waitForAckNak;	// set to true after transmit to wait for ACK
+uint8_t 	txState;	// state of TX state machine
+time_t 		tmrWaitForAck;	// wait for ack timer
+uint8_t 	txBuffer[SIZETXBUF];	// transmit buffer
+int 		haveTxMsg;		// flag says txMsg waiting
+int 		haveTxRetry;	// flag says retry waiting
+int 		haveResponse;	// flag says valid response came in
+uint16_t 	nTxMsg;		// number of bytes in simple message
+uint8_t 	txToggle;	// transmit sequence number
+uint8_t * 	lastTxMsg;// save for retry
+uint16_t 	nLastTxMsg;// "
+int			txFail;			// flag shows failure of tx packet sequence
+
 static int (*pcallback)(unsigned char *, int ) ;
 
 //-------------------------------------
 // Receive variables
 //-------------------------------------
-UINT16          nRxBytes;		// count of bytes received
-BYTE            rxAckNak;		// holds ack if received
-BYTE            rxState;		// state of RX state machine
-BYTE 			rxFCSLow;		// receive frame check sequence
-BYTE 			rxFCSHigh;		// receive frame check sequence
-BYTE            rxToggle;		// last received sequence byte
-BYTE			rxID;			// last identity byte
-TIME_T          tmrSinceLast;	// time since last received character
-BYTE            rxBuffer[SIZERXBUF];// receive buffer
-BOOL            inRx;			// currently receiving a message
-UINT16          nMsgBytes;		// number of msg bytes to receive
-BOOL			gotChar;		// flag shows received char
+uint16_t	nRxBytes;		// count of bytes received
+uint8_t 	rxAckNak;		// holds ack if received
+uint8_t 	rxState;		// state of RX state machine
+uint8_t 	rxFCSLow;		// receive frame check sequence
+uint8_t 	rxFCSHigh;		// receive frame check sequence
+uint8_t 	rxToggle;		// last received sequence byte
+uint8_t 	rxID;			// last identity byte
+time_t 		tmrSinceLast;	// time since last received character
+uint8_t 	rxBuffer[SIZERXBUF];	// receive buffer
+int 		inRx;			// currently receiving a message
+uint16_t 	nMsgBytes;		// number of msg bytes to receive
+int 		gotChar;		// flag shows received char
 
 //-------------------------------------
 // Application layer state machine
 //-------------------------------------
 PSEM_STATE 		psemAppState;	// logical state of connection
-TIME_T          tmrSession;		// session keep alive timer
-UINT16			retryCount;		// count for retries
-TIME_T          tmrRetry;		// retry timer -- wait for response
+time_t          tmrSession;		// session keep alive timer
+uint16_t		retryCount;		// count for retries
+time_t          tmrRetry;		// retry timer -- wait for response
 PSEM_RESPONSE	responseCode;	// response code for last message
-TIME_T			sessionTmrVal;	// session timer value
+time_t			sessionTmrVal;	// session timer value
 
 //-------------------------------------
 // Other
 //-------------------------------------
-TIME_T          ticCount;		// timer interrupt tic counter
+static time_t	ticCount;		// timer tic (1/10 sec) counter, diag purposes only
+static uint64_t	start_time ;	// starticng clock value, msec
 
 ///////////////////////////////////////////////////////////////////////////////
 //     Scenarios 
@@ -527,18 +532,44 @@ TESTMSG(DELAY150) 	= {0xff,0x96,0x00,0x00,0x00}; // 150 second delay
 TESTMSG(IDENTIFY) 	= { PSEM_IDENT};
 TESTMSG(NEGOTIATE) 	= { PSEM_NEGOTIATE, (SIZERXBUF>>8), SIZERXBUF&0xff,  1};
 
-TESTMSG(LOGON) 		= { PSEM_LOGON, 0x12,0x34, 'M', 'A', 'R', 'T', 'Y', ' ', ' ', ' ', ' ', ' '};
+////TESTMSG(LOGON) 		= { PSEM_LOGON, 0x12,0x34, 'M', 'A', 'R', 'T', 'Y', ' ', ' ', ' ', ' ', ' '};
+TESTMSG(LOGON) 		= { PSEM_LOGON, 0x00,0x01,     'n', 'e', 't', 'z', 'e', 'r', 'o', ' ', ' ', ' '};
 TESTMSG(LOGOFF) 	= { PSEM_LOGOFF};
 TESTMSG(WAIT120) 		= { PSEM_WAIT, 120};
 TESTMSG(WAIT60) 		= { PSEM_WAIT, 60};
 TESTMSG(TERMINATE)	= { PSEM_TERMINATE};
+//
 TESTMSG(READTAB0) 		= { PSEM_READ, 0,0};
+TESTMSG(READTAB3) 		= { PSEM_READ, 0,3};
+//
+TESTMSG(READTAB11) 		= { PSEM_READ, 0,11};
+TESTMSG(READTAB12) 		= { PSEM_READ, 0,12};
+TESTMSG(READTAB15) 		= { PSEM_READ, 0,15};
+TESTMSG(READTAB16) 		= { PSEM_READ, 0,16};
+//
+TESTMSG(READTAB21) 		= { PSEM_READ, 0,21};
+TESTMSG(READTAB22) 		= { PSEM_READ, 0,22};
+TESTMSG(READTAB23) 		= { PSEM_READ, 0,23};
+TESTMSG(READTAB27) 		= { PSEM_READ, 0,27};
+TESTMSG(READTAB28) 		= { PSEM_READ, 0,28};
+//
 TESTMSG(READTAB61) 		= { PSEM_READ, 0,61};
 TESTMSG(READTAB62) 		= { PSEM_READ, 0,62};
 TESTMSG(READTAB63) 		= { PSEM_READ, 0,63};
 TESTMSG(READTAB64_x) 		= { PSEM_READ_OFFSET, 0,64, 0, 0, 0, 0, 0 };	// read <blksize> bytes starting from <blkoffset>
+TESTMSG(READLPCHUNK) 		= { PSEM_READ_OFFSET, 0,64, 0, 0, 0, 0, 0 };	// read next LP chunk from current LP block
 TESTMSG(WRITE) 		= { PSEM_WRITE | 0x0f, 0,0x34, 0,0,0, 0,5, 0,0,0,0,0, 0x00};
-TESTMSG(SECURITY)	= { PSEM_SECURITY, '0','0','0','0','0', '0','0','0','0','0', '0','0','0','0','0', '0','0','0','0','0' } ;
+
+////TESTMSG(SECURITY)	= { PSEM_SECURITY, 0xa6,0xa6,0xa6,0xa6, 0xa6,0xa6,0xa6,0xa6, 0xa6,0xa6,0xa6,0xa6,
+////									   0xa6,0xa6,0xa6,0xa6, 0xa6,0xa6,0xa6,0xa6 } ;
+TESTMSG(SECURITY)	= { PSEM_SECURITY,
+		0,0,0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0,0,0 } ;
+
+TESTMSG(PROC84) = { PSEM_WRITE, 0x00, 0x07, 0x00, 0x03, 0x54, 0x08, 0x00, 0xA4} ;
 
 // Build a test scenario by listing messages to send:
 typeScenario IntroScenarios[] = {
@@ -549,8 +580,34 @@ typeScenario IntroScenarios[] = {
 		SCENARIO_ENTRY(DELAY1)
 	SCENARIO_ENTRY(SECURITY)
 	SCENARIO_ENTRY(WAIT120)
+	SCENARIO_ENTRY(PROC84)
+	SCENARIO_ENTRY(WAIT60)
+	//
 	SCENARIO_CB_ENTRY(READTAB0, gettab0)
 	SCENARIO_ENTRY(DELAY1)
+	SCENARIO_CB_ENTRY(READTAB3, gettab3)
+	SCENARIO_ENTRY(DELAY1)
+	//
+	SCENARIO_CB_ENTRY(READTAB11, gettab11)
+	SCENARIO_ENTRY(DELAY1)
+	SCENARIO_CB_ENTRY(READTAB12, gettab12)
+	SCENARIO_ENTRY(DELAY1)
+	SCENARIO_CB_ENTRY(READTAB15, gettab15)
+	SCENARIO_ENTRY(DELAY1)
+	SCENARIO_CB_ENTRY(READTAB16, gettab16)
+	SCENARIO_ENTRY(DELAY1)
+	//
+	SCENARIO_CB_ENTRY(READTAB21, gettab21)
+	SCENARIO_ENTRY(DELAY1)
+	SCENARIO_CB_ENTRY(READTAB22, gettab22)
+	SCENARIO_ENTRY(DELAY1)
+	SCENARIO_CB_ENTRY(READTAB23, gettab23)
+	SCENARIO_ENTRY(DELAY1)
+	SCENARIO_CB_ENTRY(READTAB27, gettab27)
+	SCENARIO_ENTRY(DELAY1)
+	SCENARIO_CB_ENTRY(READTAB28, gettab28)
+	SCENARIO_ENTRY(DELAY1)
+	//
 	SCENARIO_CB_ENTRY(READTAB61, gettab61)
 	SCENARIO_ENTRY(WAIT60)
 	SCENARIO_CB_ENTRY(READTAB62, gettab62)
@@ -559,6 +616,8 @@ typeScenario IntroScenarios[] = {
 	SCENARIO_ENTRY(WAIT60)
 } ;
 #define NUM_INTRO_TEST_MSGS (sizeof(IntroScenarios)/sizeof(typeScenario))
+
+////SCENARIO_CB_ENTRY(PROC84, gettab63)
 
 typeScenario TrailerScenarios[] = {
 //	SCENARIO_ENTRY(WRITE)
@@ -570,6 +629,7 @@ typeScenario TrailerScenarios[] = {
 
 typeScenario LPScenarios[] = {
 		SCENARIO_CB_ENTRY(READTAB64_x, gettab64)
+		SCENARIO_CB_ENTRY(READLPCHUNK, getlpchunk)
 };
 #define NUM_LP_READ_MSGS (sizeof(LPScenarios)/sizeof(typeScenario))
 
@@ -584,24 +644,24 @@ unsigned char *pReadTabMsgs = NULL ;
 
 char *responseNames[] =
 {
-	"PSEM_RESPONSE_OK",
-	"PSEM_RESPONSE_ERR",
-	"PSEM_RESPONSE_SNS",
-	"PSEM_RESPONSE_ISC",
-	"PSEM_RESPONSE_ONP",
-	"PSEM_RESPONSE_IAR",
-	"PSEM_RESPONSE_BSY",
-	"PSEM_RESPONSE_DNR",
-	"PSEM_RESPONSE_DLK",
-	"PSEM_RESPONSE_RNO",
-	"PSEM_RESPONSE_ISSS",
-	"PSEM_RESPONSE_FAIL"
+	"ACK",
+	"NAK",
+	"SNS",
+	"ISC",
+	"ONP",
+	"IAR",
+	"BSY",
+	"DNR",
+	"DLK",
+	"RNO",
+	"ISSS",
+	"FAIL"
 };
 
 
 // Table for lookup version of crc computation
 //; CCIT table = x^16 + x^15 + x^2 + 1
-UINT16          CCITShortTab[16] =
+uint16_t          CCITShortTab[16] =
 {
 	0x0000, 0x1081, 0x2102, 0x3183, 0x4204, 0x5285, 0x6306, 0x7387,
 	0x8408, 0x9489, 0xA50A, 0xB58B, 0xC60C, 0xD68D, 0xE70E, 0xF78F
@@ -611,40 +671,38 @@ UINT16          CCITShortTab[16] =
 //-------------------------------------
 
 
- // commport and current statistics
-#ifdef __WIN32__
-void *hComm ;
-
 struct timeval tv0 ;
 
-#endif
+extern char seriodev[] ;
+////extern char proc_dir[] ;
+extern int baud;
+extern char user[] ;
+extern char pw[] ;
 
-INT16           port;
-INT16           baud;
-char *user = NULL ;
-char *pw = "00000000000000000000" ;  	// 20 zeros
+extern char tablist[] ;
+extern int tables[] ;
+extern int ntables ;
 
-int tables[128] ;
-int ntables = 0 ;;
+extern int verbose ;
+extern int dosave ;
+extern int doxml ;
+extern int force_post ;
 
-int verbose = 0 ;
-int dosave = 0 ;
-int doxml = 0 ;
+extern char outdir[] ;
+extern char xmlfn[] ;
 
-char outdir[256] = "./" ;
-
-// Set Read LP info helper. Called from gettab63() and gettab64() callback functions
-void set_rlp_info(int rlpmode, readlp_info_t *pinfo)
+// Set Read LP parameters helper. Called from gettab63() and gettab64() callback functions
+void set_rlp_params(int rlpmode, readlp_info_t *pinfo)
 {
 	readlpmode = rlpmode ;
 
 	if (pinfo) {
 		memcpy((char *)&rlpinfo, pinfo, sizeof(readlp_info_t)) ;
-		TRACE("==== off=%d\n", rlpinfo.lpset_offset) ;
 	}
 	else {
 		memset((char *)&rlpinfo, 0, sizeof(readlp_info_t)) ;
 	}
+	VVTRACE("==== next off=%d\n", rlpinfo.lpset_offset) ;
 }
 
 /*------------------------------------------------------------------------
@@ -652,78 +710,76 @@ void set_rlp_info(int rlpmode, readlp_info_t *pinfo)
 ------------------------------------------------------------------------*/
 
 //------------------------------------------------------------------------
-//	void SendMsg()
 //	Kicks off send of message
 //------------------------------------------------------------------------
 //
-void SendMsg()
+void SendMsg(int fd, uint8_t *p, int n )
 {
 	int rc ;
 
-	if (nTxBytes > 0)	// must ensure > 0
+	if (n > 0)	// must ensure > 0
 	{
 		// now we can transmit
-		inTx = TRUE;
+		inTx = 1;
 
-		rc = writeToSerialPort(hComm, pTxData, nTxBytes) ;
-		if (rc > 0)
+		if (verbose)
+			DumpHex(p, n) ; fflush(stdout) ;
+
+		rc = write(fd, p, n) ;
+		if (rc > 0) {
 			nTxBytes -= rc ;
-
-#ifdef __WIN32__
-		if (nTxBytes == 0) {
-			flushSerialPort(hComm) ;
-			inTx = FALSE;
+			if (nTxBytes == 0) {
+				inTx = 0;
+			}
 		}
-#endif
 	}
 }
 
-void SendAckNak(BYTE ack)
+void SendAckNak(int fd, uint8_t ack)
 {
 	txAckNak 	= ack;
 	pTxData 	= &txAckNak;
 	nTxBytes 	= 1;
-	VVSHOWPACKET("Transmit ACK/NAK @", &txAckNak, 1);
-	SendMsg();
+	////VVSHOWPACKET("Transmit ACK/NAK @", &txAckNak, 1);
+	VTRACE("> %s\n", (ack) ? "ACK":"NAK") ;
+	SendMsg(fd, pTxData, (int) nTxBytes);
 }
 
 
 //------------------------------------------------------------------------
-//	void UpdateTxState()
+//	int UpdateTxState()
 //	updates the transmission of a message and/or ack/nak
 //------------------------------------------------------------------------
 //
-void UpdateTxState()
+int UpdateTxState(int fd)
 {
+	int rc = 1 ;
+
 	// finished transmitting a character
-	if (inTx)
-	{
+	if (inTx) {
 		// must ensure > 0
-		if (nTxBytes > 0)
-		{
+		if (nTxBytes > 0) {
 			// now we can transmit
-			SendMsg() ;
+			SendMsg(fd, pTxData, (int) nTxBytes) ;
 			if (nTxBytes)
-				inTx = FALSE;
+				inTx = 0;
 		}
 		else
-			inTx = FALSE;
+			inTx = 0;
 
 	}
 
-	switch (txState)
-	{
+	switch (txState) {
  		case TX_IDLE:
 			if (haveTxRetry)
 			{
 				// initialize retry send of message
-				haveTxRetry	= FALSE;
+				haveTxRetry	= 0;
 				txState 	= TX_MSG;
 			}
-			else if (haveTxMsg)
-			{
+			else if (haveTxMsg) {
 				// initialize send of message
-				haveTxMsg 	= FALSE;
+				haveTxMsg 	= 0;
 				retryCount 	= MAX_RETRY;
 				nLastTxMsg 	= nTxMsg;
 				lastTxMsg 	= txBuffer;
@@ -734,68 +790,61 @@ void UpdateTxState()
 		case TX_MSG:
 			// check if the last TX is still pending -- might happen if
 			// an ACK/NAK prior to sending response
-			if(inTx==TRUE)
+			if(inTx==1)
 				break;
 					
 			// start send of message
-			nTxBytes 		= nLastTxMsg ;
-			pTxData 		= lastTxMsg;
+			nTxBytes = nLastTxMsg ;
+			pTxData = lastTxMsg;
 
-			SendMsg();
+			SendMsg(fd, pTxData, (int) nTxBytes);
 		
-			waitForAckNak 	= TRUE;
+			waitForAckNak 	= 1;
 			retryCount--;
 
 			// go to wait for ack 
 			txState = TX_WAITFORACK;
 			SetN0MTimer(&tmrWaitForAck, WAITFORACK);
 
-			VVSHOWPACKET("Transmit message  @", lastTxMsg, nLastTxMsg);
-			if (verbose)
-				parse_request(&lastTxMsg[6], nLastTxMsg-6-2) ;
+			if (verbose) {
+				parse_request(&lastTxMsg[6], nLastTxMsg-6-2, verbose) ;
+				DumpHex(lastTxMsg, nLastTxMsg);
+			}
 			break;
 
 		case TX_WAITFORACK:
 			// check if the last TX is still pending
-			if(inTx==TRUE)
+			if(inTx==1)
 				break;
 
 			// Check if we received an ACK/NAK
-			if (waitForAckNak == FALSE)
-			{
-				VVSHOWPACKET("Received ACK/NAK @", &rxAckNak, 1);
-					
+			if (waitForAckNak == 0) {
 				// process depending on ACK or NAK
-				if(rxAckNak == PSEM_ACK)
-				{
+				if(rxAckNak == PSEM_ACK) {
 					txState 		= TX_WAITFORRESPONSE;
 					SetN0MTimer(&tmrRetry,WAITFORRESPONSE);
-					haveResponse 	= FALSE;
-					txFail			= FALSE;
+					haveResponse 	= 0;
+					txFail			= 0;
 				}
-				else 
-				{
+				else {
 					// if retryCount has tries left, resend or fail
 					if (retryCount)
 					{
 						TRACE("Retrying transmit msg due to NAK: Try %d\n", MAX_RETRY - retryCount);
 						txState = TX_IDLE;
-						haveTxRetry	= TRUE;
+						haveTxRetry	= 1;
 					}
 					else
 						txState = TX_FAIL;
 				}
 			}
-			else
-			{
+			else {
 				// check for timeout
-				if (CheckN0MTimer(&tmrWaitForAck))
-				{
-					if (retryCount)
-					{
+				if (CheckN0MTimer(&tmrWaitForAck)) {
+					if (retryCount) {
 						TRACE("Retrying transmit msg due to timeout waiting for ACK : Try %d\n", MAX_RETRY - retryCount);
 						txState = TX_IDLE;	// try again
-						haveTxRetry	= TRUE;
+						haveTxRetry	= 1;
 					}
 					else
 						txState = TX_FAIL;	// go to idle state
@@ -805,41 +854,33 @@ void UpdateTxState()
 
 		case TX_WAITFORRESPONSE:
 			// Check for response wait timeout
-			if(CheckN0MTimer(&tmrRetry))
-			{
+			if(CheckN0MTimer(&tmrRetry)) {
 				// repsone didn't come in
-				if(retryCount)
-				{
+				if(retryCount) {
 					TRACE("Retrying transmit msg due to response timeout: Try %d\n", MAX_RETRY - retryCount);
 					txState = TX_IDLE;	// retry send
-					haveTxRetry	= TRUE;
+					haveTxRetry	= 1;
 				}
 				else
 					txState = TX_FAIL;
 			}
-			else
-			{
+			else {
 				// check if response came in detected by receive state machine
-				if(haveResponse == TRUE)
-				{
+				if(haveResponse == 1) {
 					// Check if it was good response -- not duplicate and not bad
-					if(txFail == TRUE)
-					{
-						if(txAckNak == PSEM_NAK)
-						{
+					if(txFail == 1) {
+						if(txAckNak == PSEM_NAK) {
 							// repsone didn't come in
-							if(retryCount)
-							{
+							if(retryCount) {
 								TRACE("Sending NAK, and wait for response again : Try %d\n", MAX_RETRY - retryCount);
 								txState = TX_IDLE;	// retry send after sending NAK
 							}
 							else
 								txState = TX_FAIL;
 						}
-						else
-						{
+						else {
 							// it was duplicate, continue waiting
-							haveResponse = FALSE; 
+							haveResponse = 0;
 						}
 					}
 					else
@@ -853,17 +894,21 @@ void UpdateTxState()
 			txState 		= TX_IDLE;
 			psemAppState 	= PSEM_APP_BASE;
 			responseCode 	= PSEM_RESPONSE_FAIL;
-			haveResponse 	= TRUE;
-			TRACE("TxMessage Failure @%d\n",ticCount);
+			haveResponse 	= 1;
+			TRACE("TxMessage Failure @%d\n",(int)ticCount);
+			rc = 0 ;
 			break;
 			
 		default:
 			// catch fault -- should not get invalid state
 			// Show error and reinitialize comm
-			TRACE("Unknown TX service @%d\n",ticCount);
+			TRACE("Unknown TX service @%d\n",(int)ticCount);
 			InitializeComm(INITIALIZE_TX);
+			rc = 0 ;
 			break;
 	}
+
+	return rc ;
 }
 
 //------------------------------------------------------------------------
@@ -871,36 +916,35 @@ void UpdateTxState()
 //	updates the reception of a message and/or ack/nak
 //------------------------------------------------------------------------
 //
-void UpdateRxState()
+void UpdateRxState(int fd)
 {
-	UINT16          fcs;
-	UINT16          i;
+	uint16_t          fcs;
+	uint16_t          i;
 ////////////////////
-#ifdef __WIN32__
 	unsigned char c ;
 	int n ;
 	
-	gotChar = FALSE;
+	gotChar = 0;
 
-	n = readFromSerialPort(hComm, &c, 1) ;
+	n = 0 ;
+	if (uartio_dataready(fd)) {
+		uartio_read(fd, (char *) &c) ;
+		n = 1 ;
+	}
 
 	if (n == 1) {
 		// check for receive of start of frame
-		if (!inRx)
-		{
+		if (!inRx) {
 			// framing looks for start of packet or ack/nak
-			if (c == PSEM_STP)
-			{
-				inRx = TRUE;
+			if (c == PSEM_STP) {
+				inRx = 1;
 			}
-			else if (waitForAckNak)
-			{
+			else if (waitForAckNak) {
 				// if waiting for acks see if we got it
 				//  Note: skip over any garbage
-				if( (c == PSEM_ACK) || (c == PSEM_NAK) )
-				{
+				if( (c == PSEM_ACK) || (c == PSEM_NAK) ) {
 					rxAckNak = c;
-					waitForAckNak = FALSE;
+					waitForAckNak = 0;
 				}
 			}
 
@@ -908,40 +952,34 @@ void UpdateRxState()
 		}
 
 		// if count of bytes received less than max
-		if (nRxBytes < SIZERXBUF - 1)
-		{
+		if (nRxBytes < SIZERXBUF - 1) {
 			// store it in receive buffer
 			rxBuffer[nRxBytes++] = c;
-			gotChar = TRUE;
+			gotChar = 1;
 		}
 	}
-#endif
 ////////////////////
 	// update received character timer if necessary
-	if (gotChar == TRUE)
-	{
-		gotChar = FALSE;
+	if (gotChar == 1) {
+		gotChar = 0;
 		
 		// set timer to detect timeout for framing
 		SetN0MTimer(&tmrSinceLast, INTER_CHARACTER_TIME_OUT);
 	}
 	
 	// update application layer state message timeout if not in idle
-	if((psemAppState != PSEM_APP_BASE) && (CheckN0MTimer(&tmrSession)) )
-	{
-		TRACE("Session timeout @%d\n",ticCount);
+	if((psemAppState != PSEM_APP_BASE) && (CheckN0MTimer(&tmrSession)) ) {
+		TRACE("Session timeout @%d\n",(int)ticCount);
 		psemAppState = PSEM_APP_BASE;
 		rxToggle = PSEM_CTRL_TGL;
 	}
 	
 	
 	// update receive state machine for data link layer
-	switch (rxState)
-	{
+	switch (rxState) {
 		case RX_IDLE:
 			// check for in receive of packet
-			if (inRx == TRUE)
-			{
+			if (inRx == 1) {
 				// we are change state
 				rxState = RX_HEADER;
 			}
@@ -949,8 +987,7 @@ void UpdateRxState()
 
 		case RX_HEADER:
 			// Check for message done
-			if (nRxBytes >= sizeof(typePSEMHeader))
-			{
+			if (nRxBytes >= sizeof(typePSEMHeader)) {
 				// compute length of message 
 				nMsgBytes = sizeof(typePSEMHeader) - 1
 					+ (rxBuffer[offsetof(typePSEMHeader, lengthmsb)] << 8)	// apdu
@@ -960,28 +997,24 @@ void UpdateRxState()
 				// we are change state
 				rxState = RX_BODY;
 			}
-			else if (CheckN0MTimer(&tmrSinceLast))
-			{
-				inRx 	= FALSE;
+			else if (CheckN0MTimer(&tmrSinceLast)) {
+				inRx 	= 0;
 				rxState = RX_IDLE;
 			}
 			break;
 
 		case RX_BODY:
 			// Check for message done
-			if (nRxBytes >= nMsgBytes)
-			{
+			if (nRxBytes >= nMsgBytes) {
 				// we have a message
-				VVSHOWPACKET("Received message @", rxBuffer, nRxBytes);
-
+				////VVSHOWPACKET("Received message @", rxBuffer, nRxBytes);
 
 				// check fcs
 				CRCINITIALIZE(fcs);
 				for (i = 0; i < nMsgBytes; i++)
 					CRCUPDATECHAR(fcs, rxBuffer[i]);
 				CRCFINALIZE(fcs);
-				if (fcs == GOODFCS)
-				{
+				if (fcs == GOODFCS) {
 					int cnt ;
 
 					if (pcallback) {
@@ -989,49 +1022,50 @@ void UpdateRxState()
 						pcallback = NULL ;
 					}
 
-					cnt = parse_response(&rxBuffer[6], nRxBytes-6-2, (int) (((typePSEMHeader *)txBuffer)->service)) ;
-					if (dosave != 0) {
+					cnt = parse_response(&rxBuffer[6], nRxBytes-6-2, (int) (((typePSEMHeader *)&txBuffer[0])->service), verbose) ;
+					{
 						int svc ;
 						int tableid ;
 
-						svc = (int) (((typePSEMHeader *)txBuffer)->service) ;
+						svc = (int) (((typePSEMHeader *)&txBuffer[0])->service) ;
 						if ((svc == REQ_READ) || (svc == REQ_PREAD_OFF)) {
+							int msglen ;
+
+							msglen = (int) (((typePSEMHeader *)&txBuffer[0])->lengthmsb) ;
+							msglen = (msglen<<8) + (int) (((typePSEMHeader *)&txBuffer[0])->lengthlsb) ;
 							tableid = txBuffer[7] ;
 							tableid = (tableid<<8) + txBuffer[8] ;
-							savetable(tableid, &rxBuffer[6+3], cnt /*nRxBytes-6-2*/) ;
+							if ((dosave != 0) /* || (tableid == 64)*/)
+								savetable(tableid, &rxBuffer[6+3], cnt /*nRxBytes-6-2*/) ;
 						}
 					}
 
 					// good crc, ack it
-					SendAckNak(PSEM_ACK);
+					SendAckNak(fd, PSEM_ACK);
 
 					// process APDU
 					// check for duplicate if same as last sequence number and same CRC
 					if( (   rxToggle 	== (PSEM_CTRL_TGL & rxBuffer[offsetof(typePSEMHeader,ctrl)]) )
 						&& (rxFCSHigh 	== rxBuffer[nMsgBytes-2])
 						&& (rxFCSLow 	== rxBuffer[nMsgBytes-1])
-						&& (rxID 		== rxBuffer[offsetof(typePSEMHeader,fill)]) )
-					{
+						&& (rxID 		== rxBuffer[offsetof(typePSEMHeader,fill)]) ) {
 						// duplicate! we acked it, now back to idle
-						TRACE("Received duplicate @%d\n",ticCount);
-						inRx 			= FALSE;
+						TRACE("Received duplicate @%d\n",(int)ticCount);
+						inRx 			= 0;
 						rxState 		= RX_IDLE;
  						break;
 					}
-					else
-					{
-						if(txState != TX_WAITFORRESPONSE)
-						{
-							TRACE("Received unexpected packet @%d\n",ticCount);
-							inRx 			= FALSE;
+					else {
+						if(txState != TX_WAITFORRESPONSE) {
+							TRACE("Received unexpected packet @%d\n",(int)ticCount);
+							inRx 			= 0;
 							rxState 		= RX_IDLE;
 	 						break;
 						}
-						else
-						{
+						else {
 							// Its a good new packet, we can try to process at application layer
 							// update for next time
-							rxToggle 	= (BYTE)(PSEM_CTRL_TGL & rxBuffer[offsetof(typePSEMHeader,ctrl)]);
+							rxToggle 	= (uint8_t)(PSEM_CTRL_TGL & rxBuffer[offsetof(typePSEMHeader,ctrl)]);
 							rxFCSHigh 	= rxBuffer[nMsgBytes-2];
 							rxFCSLow 	= rxBuffer[nMsgBytes-1];
 							rxID		= rxBuffer[offsetof(typePSEMHeader,fill)];
@@ -1041,41 +1075,36 @@ void UpdateRxState()
 						}
 					}					
 				}
-				else
-				{
+				else {
 					// its a bad packet or fragment -- NAK it
-					TRACE("Received bad checksum @%d\n",ticCount);
+					TRACE("Received bad checksum @%d\n",(int)ticCount);
 					TRACE("Sending NAK, and wait for response again : Try %d\n", MAX_RETRY - retryCount);
-					SendAckNak(PSEM_NAK);
+					SendAckNak(fd, PSEM_NAK);
 
-					if(retryCount == 0)
-					{
-						haveResponse 	= TRUE;
-						txFail			= TRUE;
+					if(retryCount == 0) {
+						haveResponse 	= 1;
+						txFail			= 1;
 					}
 
 					// back to idle
-					inRx 			= FALSE;
+					inRx 			= 0;
 					rxState 		= RX_IDLE;
 				}
 			}
-			else
-			{
+			else {
 				// see if we waited too long
-				if (CheckN0MTimer(&tmrSinceLast))
-				{
+				if (CheckN0MTimer(&tmrSinceLast)) {
 					// timed out waiting for end of message
-					TRACE("Timed out due to receive of fragment @%d\n",ticCount);
+					TRACE("Timed out due to receive of fragment @%d\n",(int)ticCount);
 					TRACE("Sending NAK, and wait for response again : Try %d\n", MAX_RETRY - retryCount);
-					SendAckNak(PSEM_NAK);
+					SendAckNak(fd, PSEM_NAK);
 
-					if(retryCount == 0)
-					{
-						haveResponse 	= TRUE;
-						txFail			= TRUE;
+					if(retryCount == 0) {
+						haveResponse 	= 1;
+						txFail			= 1;
 					}
 
-					inRx 			= FALSE;
+					inRx 			= 0;
 					rxState 		= RX_IDLE;
 				}
 			}
@@ -1083,95 +1112,91 @@ void UpdateRxState()
 
 		case RX_PROCESS:
 			// try to process message
-			haveResponse = TRUE;
-			if (DoPSEMClientApp())
-			{
+			haveResponse = 1;
+			if (DoPSEMClientApp()) {
 				// timed out waiting for end of message
-				inRx 	= FALSE;		// free up receive buffer
+				inRx 	= 0;		// free up receive buffer
 				rxState = RX_IDLE;	// return to idle
 			}
 			break;
 
 		default:
 			// Show error and reinitialize comm
-			TRACE("Unknown RX service @%d\n",ticCount);
+			TRACE("Unknown RX service @%d\n",(int)ticCount);
 			InitializeComm(INITIALIZE_RX);
 			break;
 	}
 }
 
 //------------------------------------------------------------------------
-//	BOOL DoPSEMClientApp()
+//	int DoPSEMClientApp()
 //	Processes an application layer message.  Message is to be handled, 
 //	  providing response buffer is available. 
 //		if buffer is not available, 
-//	  		we will wait, return FALSE
-// 		if successfully complete on message, return TRUE
+//	  		we will wait, return 0
+// 		if successfully complete on message, return 1
 //------------------------------------------------------------------------
 //
-BOOL DoPSEMClientApp()
+int DoPSEMClientApp()
 {
-	BYTE 			service;		// current app service invoked
+	uint8_t 			service;		// current app service invoked
 	
 	// initialize result code
 	responseCode = rxBuffer[offsetof(typePSEMHeader, service)];
-	service =  ((typePSEMHeader *)txBuffer)->service;
+	service =  ((typePSEMHeader *)&txBuffer[0])->service;
     
 	// handle service request
-	switch (service)
-	{
+	switch (service) {
 		case PSEM_IDENT:
-			VTRACE("PSEM Ident response: %s\n",responseNames[responseCode]);
+			////VTRACE("> Ident -- %s\n",responseNames[responseCode]);
 			psemAppState =  PSEM_APP_ID;
 			break;
 
 		case PSEM_TERMINATE:
-			VTRACE("PSEM Terminate response: %s\n",responseNames[responseCode]);
+			////VTRACE("> Terminate -- %s\n",responseNames[responseCode]);
 			psemAppState =  PSEM_APP_BASE;
 			sessionTmrVal = CHANNEL_TRAFFIC_TIME_OUT;
 			break;			
 
-			
 		case PSEM_READ_OFFSET:
 		case PSEM_READ:
-			VTRACE("PSEM Read response: %s\n",responseNames[responseCode]);
+			////VTRACE("> Read -- %s\n",responseNames[responseCode]);
 			break;			
-
 
 		case PSEM_WRITE:
 		case PSEM_WRITE_OFFSET:
-			VTRACE("PSEM Write response: %s\n",responseNames[responseCode]);
+			////VTRACE("> Write -- %s\n",responseNames[responseCode]);
 			break;
 
 		case PSEM_LOGON:
-			VTRACE("PSEM Logon response: %s\n",responseNames[responseCode]);
+			////VTRACE("> Logon -- %s\n",responseNames[responseCode]);
 			psemAppState =  PSEM_APP_SESSION;
 			break;
 		
 		case PSEM_SECURITY:
-			VTRACE("PSEM Security response: %s\n",responseNames[responseCode]);
+			////VTRACE("> Security -- %s\n",responseNames[responseCode]);
 			psemAppState =  PSEM_APP_SESSION;
 			break;
 
 		case PSEM_LOGOFF:
-			VTRACE("PSEM Logoff response: %s\n",responseNames[responseCode]);
+			////VTRACE("> Logoff -- %s\n",responseNames[responseCode]);
 			psemAppState =  PSEM_APP_ID;
 			sessionTmrVal = CHANNEL_TRAFFIC_TIME_OUT;
 			break;
 			
 		case PSEM_NEGOTIATE:
-			VTRACE("PSEM Negotiate response: %s\n",responseNames[responseCode]);
+			////VTRACE("> Negotiate -- %s\n",responseNames[responseCode]);
 			break;
 			
 		case PSEM_WAIT:
-			VTRACE("PSEM Wait response: %s\n",responseNames[responseCode]);
+			////VTRACE("> Wait -- %s\n",responseNames[responseCode]);
 			// update our session timer value
-			sessionTmrVal = (TIME_T)txBuffer[offsetof(typePSEMHeader, service)+1]*(TIME_T)10;
+			sessionTmrVal = (time_t)txBuffer[offsetof(typePSEMHeader, service)+1]*(time_t)10;
 			break;
 			
 		default:
 			// use simple response -- service not supported
-			TRACE("Processed unkown response packet: %s\n",responseNames[responseCode]);
+			TRACE("> Processed unkown response packet: %s\n",responseNames[responseCode]);
 			break;
 	}
 
@@ -1179,19 +1204,19 @@ BOOL DoPSEMClientApp()
     // We processed a message, should update Session timer
 	SetN0MTimer(&tmrSession, sessionTmrVal);
 	
-	return (TRUE);
+	return (1);
 }
 
 
 
 //------------------------------------------------------------------------
-// UINT16                           // returns length of packet
+// uint16_t                           // returns length of packet
 // SetTxBuffer(PSEM_FRAME_FMT fmt, 	// the format of the frame 
-// BYTE servicecode, 				// a service/response code
-// BYTE * data, 				// data for the frame
-// UINT16 length, 					// length of data
-// PBYTE buffer, 					// buffer to place packet in
-// UINT16 sizebuffer)				// size of destination buffer
+// uint8_t servicecode, 				// a service/response code
+// uint8_t * data, 				// data for the frame
+// uint16_t length, 					// length of data
+// uint8_t * buffer, 					// buffer to place packet in
+// uint16_t sizebuffer)				// size of destination buffer
 //
 //	SetTxBuffer is the packet assembly method for the protocol.  Based on 
 // 	 what is passed to it, it writes a packet frame in transmit buffer to 
@@ -1199,23 +1224,22 @@ BOOL DoPSEMClientApp()
 //------------------------------------------------------------------------
 //
 // returns length of packet
-UINT16 SetTxBuffer(PSEM_FRAME_FMT fmt, 	// the format of the frame
-BYTE servicecode, 					// a service / response code
-BYTE * data, 					// data for the frame
-UINT16 length, 						// length of data
-PBYTE buffer, 						// buffer to place packet in
-UINT16 sizebuffer)					// size of destination buffer
+uint16_t SetTxBuffer(PSEM_FRAME_FMT fmt, 	// the format of the frame
+		uint8_t servicecode,	// a service / response code
+		uint8_t * data, 		// data for the frame
+		uint16_t length, 		// length of data
+		uint8_t * buffer, 		// buffer to place packet in
+		uint16_t sizebuffer)	// size of destination buffer
 {
-	UINT16          fcs;			// for frame check sequence
-	UINT16          i;
-	PBYTE           pT;
-	BYTE            csum;
-	UINT16          msgLength;		// the length of message + service
+	uint16_t	fcs;	// for frame check sequence
+	uint16_t	i;
+	uint8_t *	pT;
+	uint8_t		csum;
+	uint16_t	msgLength;	// the length of message + service
 
 	// check if too large
-	if (length >= sizebuffer)
-	{
-		TRACE("Error tried to overrun transmit buffer @%d\n",ticCount);
+	if (length >= sizebuffer) {
+		TRACE("Error tried to overrun transmit buffer @%d\n",(int)ticCount);
 		return(0);
 	}
 
@@ -1233,56 +1257,48 @@ UINT16 sizebuffer)					// size of destination buffer
 	*pT++ = txToggle;			// Set control byte
  
 	*pT++ = 0;					// segmented sequence number always 0
-	*pT++ = (BYTE)(msgLength >> 8);		// length of message in bytes
-	*pT++ = (BYTE)(msgLength & 0xff);	// length of message in bytes
+	*pT++ = (uint8_t)(msgLength >> 8);		// length of message in bytes
+	*pT++ = (uint8_t)(msgLength & 0xff);	// length of message in bytes
 	*pT++ = servicecode;		// PSEM service
 
 	// check if this is request or PSEM response with data
-	if (fmt == PSEM_FRAME_RESPONSE)
-	{
+	if (fmt == PSEM_FRAME_RESPONSE) {
 		// its response with data = <count> <data> <cksum>
-		*pT++ = (BYTE)(length >> 8);
-		*pT++ = (BYTE)(length & 0xff);
+		*pT++ = (uint8_t)(length >> 8);
+		*pT++ = (uint8_t)(length & 0xff);
 		csum = 0;
 
 		// copy in data and compute checksum
-		for (i = 0; i < length; i++)
-		{
+		for (i = 0; i < length; i++) {
 			csum += data[i];
 			*pT++ = data[i];
 		}
 
 		// place response data checksum in packet
-		*pT++ = (BYTE)(~csum + 1);		// negate
-
+		*pT++ = (uint8_t)(~csum + 1);		// negate
 	}
-	else
-	{
+	else {
 		// copy in data and compute checksum
 		for (i = 0; i < length; i++)
 			*pT++ = data[i];
 	}
 	
 	// compute checksum
-	msgLength = ((UINT16) (pT - buffer));
+	msgLength = ((uint16_t) (pT - buffer));
 	pT = buffer;
 	CRCINITIALIZE(fcs);
-	for (i = 0; i < msgLength; i++)
-	{
+	for (i = 0; i < msgLength; i++) {
 		CRCUPDATECHAR(fcs, *pT);
 		pT++;
 	}
 
 	fcs = ~fcs;
-	*pT++ = (BYTE)(fcs & 0xff);
-	*pT++ = (BYTE)(fcs >> 8);
+	*pT++ = (uint8_t)(fcs & 0xff);
+	*pT++ = (uint8_t)(fcs >> 8);
 
 	// return total length of message
-	return ((UINT16) (pT - buffer));
+	return ((uint16_t) (pT - buffer));
 }
-
-
-
 
 /*------------------------------------------------------------------------
 *********************   Communications Initialization	******************
@@ -1295,8 +1311,10 @@ UINT16 sizebuffer)					// size of destination buffer
 //		 be initialized.
 //------------------------------------------------------------------------
 //
-void InitializeComm(INITIALIZE_MYPLATFORM what)
+int InitializeComm(INITIALIZE_MYPLATFORM what)
 {
+	int rc = -1 ;
+
 	// Always initialize state of connection
 	psemAppState = PSEM_APP_BASE;		// logical state of connection
 
@@ -1304,12 +1322,10 @@ void InitializeComm(INITIALIZE_MYPLATFORM what)
 	tmrSession = 0;				// time since last received character
 	sessionTmrVal = CHANNEL_TRAFFIC_TIME_OUT;
 
-
 	// initialize receive state machine
-	if (what & INITIALIZE_RX)
-	{
+	if (what & INITIALIZE_RX) {
 		nRxBytes 	= 0;
-		inRx 		= FALSE;
+		inRx 		= 0;
 		rxAckNak 	= 0;
 		rxState 	= RX_IDLE;
 		rxFCSLow 	= INITFCS & 0xff;
@@ -1318,22 +1334,21 @@ void InitializeComm(INITIALIZE_MYPLATFORM what)
 		tmrSinceLast= 0;
 		nMsgBytes 	= 0;
 		rxToggle 	= PSEM_CTRL_TGL;
-		gotChar		= FALSE;
+		gotChar		= 0;
 		memset(rxBuffer, 0, SIZERXBUF);
 	}
 
 	// initialize transmit state machine
-	if (what & INITIALIZE_TX)
-	{
+	if (what & INITIALIZE_TX) {
 		nTxBytes 	= 0;
 		pTxData 	= NULL;
-		inTx 		= FALSE;
+		inTx 		= 0;
 		txAckNak 	= 0;
-		waitForAckNak = FALSE;
+		waitForAckNak = 0;
 		txState 	= TX_IDLE;
 		tmrWaitForAck = 0;
-		haveTxMsg 	= FALSE;
-		haveTxRetry = FALSE;
+		haveTxMsg 	= 0;
+		haveTxRetry = 0;
 		nTxMsg 		= 0;
 		txToggle 	= PSEM_CTRL_TGL;
 		lastTxMsg 	= NULL;
@@ -1342,17 +1357,11 @@ void InitializeComm(INITIALIZE_MYPLATFORM what)
 	}
 
 
-	if (what & INITIALIZE_COMM)
-	{
-#ifdef __WIN32__
-		char tpl[] = "\\\\.\\COM" ;
-		char comport[16] ;
-
-		sprintf(&comport[0], "%s%d", tpl, port) ;
-		hComm = openSerialPort(comport, B9600, ONESTOPBIT, NOPARITY) ;
-#endif
-
+	if (what & INITIALIZE_COMM) {
+		rc = uartio_open(seriodev, baud, 'N', 8, 1, 0) ;
 	}
+
+	return rc ;
 }
 
 //------------------------------------------------------------------------=
@@ -1360,12 +1369,9 @@ void InitializeComm(INITIALIZE_MYPLATFORM what)
 //	Terminate -- probably only useful for PC simulation to restore ports
 //------------------------------------------------------------------------=
 //
-void TerminateComm()
+void TerminateComm(int fd)
 {
-#ifdef __WIN32__
-	closeSerialPort(hComm) ;
-#endif
-
+	uartio_close(fd) ;
 }
 
 
@@ -1373,17 +1379,36 @@ void TerminateComm()
 **************************   Timer and timing support	******************
 ------------------------------------------------------------------------*/
 
+// returns current monotonic time in milliseconds, 0 on error
+//
+uint64_t get_sys_timer()
+{
+	struct timespec ts ;
+	uint64_t tt = 0 ;
+	clockid_t clk_id ;
+#ifdef __CYGWIN__
+	clk_id = CLOCK_MONOTONIC ;
+#else
+	clk_id = CLOCK_MONOTONIC_RAW ;
+#endif
+
+	if (clock_gettime(clk_id,&ts) == 0) {
+		tt = ts.tv_sec ;
+		tt = (tt*1000) + (ts.tv_nsec / 1000000) ;
+	}
+
+	return tt ;
+}
+
+
 //------------------------------------------------------------------------
 //	void InitializePCTimer()
 //	Sets up timer tic interrupt handler
 //------------------------------------------------------------------------
 //
-void
-InitializeN0MTimer()
+void InitializeN0MTimer()
 {
-#ifdef __WIN32__
-	gettimeofday(&tv0, NULL) ;
-#endif
+	start_time = get_sys_timer() ;
 	ticCount = 0;
 
 }
@@ -1393,8 +1418,7 @@ InitializeN0MTimer()
 //	Removes timer tic interrupt handler
 //------------------------------------------------------------------------
 //
-void
-TerminateN0MTimer()
+void TerminateN0MTimer()
 {
 }
 
@@ -1403,29 +1427,17 @@ TerminateN0MTimer()
 //	Sets a timer, delt is specified in 1/10 of second
 //------------------------------------------------------------------------
 //
-void SetN0MTimer(TIME_T * t, TIME_T delt)
+void SetN0MTimer(time_t * t, time_t delt)
 {
-#ifdef __WIN32__
-	struct timeval tv ;
-	unsigned long tt ;
+	uint64_t tt ;
 
-	gettimeofday(&tv, NULL) ;
-	tt = tv.tv_usec ;
-	tt = (tt > tv0.tv_usec) ? tt - tv0.tv_usec : tv0.tv_usec - tt ;
-	tt /= 1000 ; 	// make it milliseconds
-	tt += (tv.tv_sec - tv0.tv_sec)*1000 ;
-	tt /= MSEC_PER_TIC ;
-	ticCount = tt ; // millisecond since program start
-#endif
-
-	if (delt > MAXTIMERVAL)
-		*t = ticCount + MAXTIMERVAL - 1;
-	else
+	if ((tt = get_sys_timer()) != 0) {
+		ticCount = (time_t) ((tt - start_time)/100) ;
 		*t = ticCount + delt ;
-
-	// make sure not 0 Note: will cause 1 tic error at 0
-	if (*t == 0)
-		(*t)++;
+		// make sure not 0 Note: will cause 1 tic error at 0
+		if (*t == 0)
+			(*t)++;
+	}
 }
 
 //------------------------------------------------------------------------
@@ -1433,76 +1445,25 @@ void SetN0MTimer(TIME_T * t, TIME_T delt)
 //	Sets a timer
 //------------------------------------------------------------------------
 //
-BOOL CheckN0MTimer(TIME_T * t)
+int CheckN0MTimer(time_t * t)
 {
-#ifdef __WIN32__
-	struct timeval tv ;
-	unsigned long tt ;
-#endif
+	uint64_t tt = get_sys_timer() ;
+	int rc = 1 ; // expired, by default
+	time_t tc ;
 
-	if (*t == 0)
-		return (FALSE);			// timer is not active
-
-#ifdef __WIN32__
-	gettimeofday(&tv, NULL) ;
-	tt = tv.tv_usec ;
-	tt = (tt > tv0.tv_usec) ? tt - tv0.tv_usec : tv0.tv_usec - tt ;
-	tt /= 1000 ; 	// make it milliseconds
-	tt += (tv.tv_sec - tv0.tv_sec)*1000 ;
-	tt /= MSEC_PER_TIC ;
-	ticCount = tt ; // millisecond since program start
-#endif
-
-	// Timed out if ticCount has passed t by up to - MAXTIMERVAL
-	if ((ticCount - *t) < (MAXTIMER - MAXTIMERVAL))
-	{
-		*t = 0;
-		return (TRUE);
+	if (tt != 0) {
+		tc = (time_t) ((tt - start_time)/100) ;
+		if (tc >= (*t)) {
+			ticCount = tc ;
+			*t = 0 ;
+			rc = 1 ;
+		}
+		else {
+			rc = 0 ;
+		}
 	}
-	else
-	{
-		// else, we have time left
-		return (FALSE);
-	}
-}
+	return rc ;
 
-//------------------------------------------------------------------------
-//	TIME_T GetTimer (TIME_T *t)
-//	Gets a timer's remaining time
-//------------------------------------------------------------------------
-//
-TIME_T GetN0MTimer(TIME_T * t)
-{
-#ifdef __WIN32__
-	struct timeval tv ;
-	unsigned long tt ;
-#endif
-
-	// define 0 as timer not active
-	if (*t == 0)
-		return (0);				// timer is not active
-
-#ifdef __WIN32__
-	gettimeofday(&tv, NULL) ;
-	tt = tv.tv_usec ;
-	tt = (tt > tv0.tv_usec) ? tt - tv0.tv_usec : tv0.tv_usec - tt ;
-	tt /= 1000 ; 	// make it milliseconds
-	tt += (tv.tv_sec - tv0.tv_sec)*1000 ;
-	tt /= MSEC_PER_TIC ;
-	ticCount = tt ; // ticks since program start
-#endif
-
-	// check if timer has elapsed
-	if ((ticCount - *t) < (MAXTIMER - MAXTIMERVAL))
-	{
-		// if so, return 0
-		return (0);
-	}
-	else
-	{
-		// otherwise return the time remaining
-		return (*t - ticCount);
-	}
 }
 
 
@@ -1510,147 +1471,108 @@ TIME_T GetN0MTimer(TIME_T * t)
 /*------------------------------------------------------------------------
 ************************   	Main program		**************************
 ------------------------------------------------------------------------*/
-void usage()
-{
-	TRACE(" Usage: \n");
-	TRACE("  n0mcli [<flags>] [parameters]\n") ;
-	TRACE("  flags :=\n") ;
-	TRACE("    -x -- produce the .XML file named 'lpibYYYYMMDDHHNNSS.xml'\n") ;
-	TRACE("    -s -- save the above tables in corresponding 'tablexxx.dat' files\n") ;
-	TRACE("    -h -- help\n") ;
-	TRACE("    -v -- verbose\n") ;
-	TRACE("  parameters :=\n") ;
-	TRACE("    n=<count> -- read <count> meter LP blocks. Defaolt 10. 0 means 'all available'.\n") ;
-	TRACE("    d=<outdir> -- specifies the directory for output files. Current directory is used by default.\n") ;
-	TRACE("    p=<n> -- use COMn for communication. Default is COM3\n") ;
-	TRACE("    b=<baud> -- set specific COM port baudrate. Default is 9600\n") ;
-	TRACE("    p=<n> -- use COMn for communication. Default is COM3\n") ;
-	TRACE("    u=<string> -- set user id. Default is ''\n") ;
-	TRACE("    pw=<string> -- set C12.19 password. Default is '00000000000000000000'\n") ;
-	TRACE("    t=<list> -- read tables listed in comma-separated <list>, (tab0, tab61-64 always read)\n");
-}
 
-#ifdef __WIN32__
-int kbhit()
+int kbhit(int fd)
 {
 	return 0;
 }
-#endif
 
-void main(int argc, char ** argv)
+int main(int argc, char ** argv)
 {
-	TIME_T  tmrSimulation;
+	time_t  tmrSimulation;
 	int messageCnt;
-	BOOL done = FALSE;
+	int done = 0;
 	CLIENT_STATE clientState;
 	int i, j, tmptab ;
 	char *saveptr ;
 	char *p ;
-
+	int fd ;
+	int rc = 0 ;
 
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
-	//=================================
-	// Check arguments -- 
-	//=================================
-	//
-	// initialize default values
-	port 	= 3;
-	baud 	= 9600;
-	
-	for (i=1; i < argc; i++) {
-		if (strncmp(argv[i], "-h", 2) == 0) {
-			usage() ;
-			return ;
-		}
-		if (strncmp(argv[i], "p=", 2) == 0) {
-			port = atoi(&argv[i][2]) ;
-			if (port < 1)
-				port = 3 ;
-		}
-		else if (strncmp(argv[i], "b=", 2) == 0) {
-			baud = atoi(&argv[i][2]) ;
-			if ((baud < 300) || (baud > 115200))
-				baud = 9600 ;
-		}
-		else if (strncmp(argv[i], "u=", 2) == 0) {
-			user = &argv[i][2] ;
-		}
-		else if (strncmp(argv[i], "pw=", 3) == 0) {
-			pw = &argv[i][3] ;
-		}
-		else if (strncmp(argv[i], "-vvv", 4) == 0) {
-			verbose = 3 ;
-		}
-		else if (strncmp(argv[i], "-vv", 3) == 0) {
-			verbose = 2 ;
-		}
-		else if (strncmp(argv[i], "-v", 2) == 0) {
-			verbose = 1 ;
-		}
-		else if (strncmp(argv[i], "-s", 2) == 0) {
-			dosave = 1 ;
-		}
-		else if (strncmp(argv[i], "-x", 2) == 0) {
-			doxml = 1 ;
-		}
-		else if (strncmp(argv[i], "d=", 2) == 0) {
-			int l ;
+	if (!cnf_init(argc, argv)) {
+		return 1 ;
+	}
 
-			strcpy(&outdir[0], &argv[i][2]) ;
-			l = strlen(&outdir[0]) ;
-			if (l) {
-				if ((outdir[l-1] != '/') && (outdir[l-1] != '\\')) {
-					outdir[l] = '/' ;
-					outdir[l+1] = '\0' ;
-				}
-			}
-		}
-		else if (strncmp(argv[i], "n=", 2) == 0) {
-			lp_blks_to_read = atoi(&argv[i][2]) ;
-		}
-		else if (strncmp(argv[i], "t=", 2) == 0) {
-			p = strtok_r(&argv[i][2], ",", &saveptr) ;
-			for (j=0; j < 128; j++) {
-				if (p==NULL)
-					break ;
-				tmptab = 0;
-				tmptab = atoi(p) ;
-				if ((tmptab>0) && (tmptab < 100)) {
-					if ((tmptab <60) && (tmptab >64)) {
-						tables[ntables++] = tmptab ;
-					}
-				}
-				p = strtok_r(NULL, ",", &saveptr) ;
-			}
-			if (ntables > 0) {
-				unsigned char *pmsg ;
+	if (post_file[0] != '\0') {
+		char *post ;
+		int fsize = 0 ;
 
-				pReadTabMsgs = malloc(ntables * sizeof(READTABx)) ;
-				if (pReadTabMsgs) {
-					for (j=0; j < ntables; j++) {
-						pmsg = pReadTabMsgs+j*sizeof(READTABx) ;
-						memcpy(pmsg, &READTABx, sizeof(READTABx)) ;
-						pmsg[1] = tables[j] >> 8 ;
-						pmsg[2] = tables[j] & 0xFF ;
-					}
-				}
-				else
-					ntables = 0 ;
+		post = get_xmlbuf(post_file, &fsize) ;
+
+		if (post) {
+			if (fsize <= 0) {
+				fsize = strlen(post) ;
+			}
+			do_restful_post(post_url, post_bearer, post, fsize, checkpeer_flag, checkhostname_flag) ;
+			free_xmlbuf(post) ;
+			return 0 ;
+		}
+		else
+			return 1 ;
+	}
+
+
+	i = strlen(user) ;
+	j = sizeof(LOGON) ;
+	memcpy(&LOGON[3], user, i) ;
+	i += 3 ;
+	while (i<j) {
+		LOGON[i++] = ' ' ;
+	}
+
+	{
+		extern int pw_size ;
+		typeScenario *ps ;
+
+		memcpy(&SECURITY[1], &pw[0], pw_size) ;
+
+		for (ps = &IntroScenarios[0] ; ps < &IntroScenarios[NUM_INTRO_TEST_MSGS]; ps++) {
+			if (ps->pData == ((uint8_t *)&SECURITY)) {
+				ps->length = pw_size + 1 ;
+				break ;
 			}
 		}
-		else {
-			usage() ;
-			return ;
+	}
+
+	if (strlen(tablist) > 0) {
+		p = strtok_r(&tablist[0], ",", &saveptr) ;
+		for (j=0; j < 128; j++) {
+			if (p==NULL)
+				break ;
+			tmptab = 0;
+			tmptab = atoi(p) ;
+			if ((tmptab>0) && (tmptab < 100)) {
+				if ((tmptab <60) && (tmptab >64)) {
+					tables[ntables++] = tmptab ;
+				}
+			}
+			p = strtok_r(NULL, ",", &saveptr) ;
+		}
+		if (ntables > 0) {
+			unsigned char *pmsg ;
+
+			pReadTabMsgs = malloc(ntables * sizeof(READTABx)) ;
+			if (pReadTabMsgs) {
+				for (j=0; j < ntables; j++) {
+					pmsg = pReadTabMsgs+j*sizeof(READTABx) ;
+					memcpy(pmsg, &READTABx, sizeof(READTABx)) ;
+					pmsg[1] = tables[j] >> 8 ;
+					pmsg[2] = tables[j] & 0xFF ;
+				}
+			}
+			else
+				ntables = 0 ;
 		}
 	}
 
 	nScenarios = NUM_INTRO_TEST_MSGS + ntables + NUM_TRAILER_TEST_MSGS ;
 	pScenarios = malloc(nScenarios * sizeof(typeScenario)) ;
 	if (pScenarios == NULL) {
-		TRACE("Can't allocate memory for %d scenarios\n") ;
-		return ;
+		TRACE("Can't allocate memory for %d scenarios\n", nScenarios) ;
+		return 1 ;
 	}
 
 	memcpy(pScenarios, &IntroScenarios, NUM_INTRO_TEST_MSGS * sizeof(typeScenario)) ;
@@ -1661,7 +1583,13 @@ void main(int argc, char ** argv)
 	memcpy(pScenarios + NUM_INTRO_TEST_MSGS + ntables, &TrailerScenarios, NUM_TRAILER_TEST_MSGS * sizeof(typeScenario)) ;
 
 	// initialize communications processes and timing interrupts
-	InitializeComm(INITIALIZE_RX | INITIALIZE_TX | INITIALIZE_COMM);
+	fd = InitializeComm(INITIALIZE_RX | INITIALIZE_TX | INITIALIZE_COMM);
+	if (fd <0) {
+		free(pScenarios) ;
+		printf("*** cannot open %s\n", seriodev) ;
+		return 1 ;
+	}
+
 	InitializeN0MTimer();
 	
 	// Initialize client simulation
@@ -1680,31 +1608,30 @@ void main(int argc, char ** argv)
 	//=================================
 	//
 	// Hit any key to exit
-	TRACE("***** Start of SE240 Client, Hit any key to exit ****\n");
-	while (!kbhit() && !done)
-	{
+
+	while (!kbhit(fd) && !done) {
 		// Update transmit state machine
-		UpdateTxState();
+		rc = UpdateTxState(fd);
+		if (rc == 0) {
+			rc = 1 ;
+			done = 1 ;
+			continue ;
+		}
 
 		// Update receive state machine
-		UpdateRxState();
+		UpdateRxState(fd);
 		
 		// process any waiting messages
-		switch(clientState)
-		{
-		
+		switch(clientState) {
 			case CLIENT_IDLE:
 				if(CheckN0MTimer(&tmrSimulation))
 					clientState = CLIENT_REQUEST;
 				break;
-				
 			case CLIENT_REQUEST:
 				// Check for messages to send
-				if(messageCnt < nScenarios /*NUM_TEST_MSGS*/)
-				{
+				if(messageCnt < nScenarios) {
 					// start new message
-					if( SCENARIO_MSG(messageCnt)->service == 0xff )
-					{
+					if( SCENARIO_MSG(messageCnt)->service == 0xff ) {
 						// This is internal timer message
 						SetN0MTimer(&tmrSimulation,
 							( ((SCENARIO_MSG(messageCnt)->data[0])
@@ -1712,26 +1639,33 @@ void main(int argc, char ** argv)
 							* 10) );
 						clientState = CLIENT_IDLE;
 					}
-					else
-					{
+					else {
 						// This is PSEM message from script
 						if (readlpmode) {
 							unsigned int blkoffset ;
 							unsigned char *p ;
+							int chunksz ;
 
 							p = LPScenarios[0].pData ;
+							chunksz = rlpinfo.blksize ;
+							if (rlpinfo.nread > 0) {
+								chunksz = rlpinfo.blksize - rlpinfo.nread ;
+								// shouldn't happen
+								if (chunksz < 0)
+									chunksz = 0 ;
+							}
 
 							blkoffset = rlpinfo.lpset_offset ;
 							p[3] = (blkoffset >> 16) & 0xff ;
 							p[4] = (blkoffset >> 8) & 0xff ;
 							p[5] = blkoffset & 0xff ;
-							p[6] = (rlpinfo.blksize >> 8) & 0xff ;
-							p[7] = rlpinfo.blksize & 0xff ;
+							p[6] = (chunksz >> 8) & 0xff ;
+							p[7] = chunksz & 0xff ;
 
 							nTxMsg = SetTxBuffer(
 								PSEM_FRAME_SERVICE,
-								(BYTE) (RLP_SCENARIO_MSG(0)->service),
-								(BYTE *)(&RLP_SCENARIO_MSG(0)->data[0]),
+								(uint8_t) (RLP_SCENARIO_MSG(0)->service),
+								(uint8_t *)(&RLP_SCENARIO_MSG(0)->data[0]),
 								LPScenarios[0].length-1,
 								txBuffer,
 								SIZETXBUF);
@@ -1740,32 +1674,26 @@ void main(int argc, char ** argv)
 						else {
 							nTxMsg = SetTxBuffer(
 									PSEM_FRAME_SERVICE,
-									(BYTE) (SCENARIO_MSG(messageCnt)->service),
-									(BYTE *)(&SCENARIO_MSG(messageCnt)->data[0]),
+									(uint8_t) (SCENARIO_MSG(messageCnt)->service),
+									(uint8_t *)(&SCENARIO_MSG(messageCnt)->data[0]),
 									pScenarios[messageCnt].length-1,
 									txBuffer,
 									SIZETXBUF);
 							pcallback = pScenarios[messageCnt].pcb  ;
 						}
 						clientState 		= CLIENT_WAITFORRESPONSE;
-						haveTxMsg 		= TRUE;
-						haveResponse	= FALSE;
-						if (pcallback) {
-							VTRACE("\nNew CB request message @%d\n",ticCount);
-						}
-						else {
-							VTRACE("\nNew request message @%d\n",ticCount);
-						}
+						haveTxMsg 		= 1;
+						haveResponse	= 0;
 					}
 					
 					// stay on the same 'read LP block' message while in readLP mode
 					if (readlpmode == 0)
 						messageCnt++;
 				}
-				else
-				{
+				else {
 					// Done simulation
-					done = TRUE;
+					done = 1;
+					rc = 0 ;
 				}
 				break;
 				
@@ -1781,18 +1709,78 @@ void main(int argc, char ** argv)
 		}
 	}
 
-	if (doxml) {
-		FILE *fp ;
-		if ((fp=xmlopen(&outdir[0])) != NULL) {
-			xmlgen(fp) ;
-			xmlclose(fp) ;
+	// clean up for PC exit
+	TerminateN0MTimer();
+	TerminateComm(fd);
+
+	if (rc == 0)
+	{
+		if (dosave == 0) {		// save the LP table with a special name
+			unsigned int t0, t1, dur ;
+			meterinfo_t mi ;
+			readlp_info_t rlpi ;
+			char *lpaddr ;
+			int lplen ;
+			char lpfn[64] ;
+			FILE *fp ;
+
+			t0 = lp_getstart(0) ;
+			dur = lp_getduration(0) ;
+			lp_getmeterinfo(0, &mi, &rlpi) ;
+			t1 = t0 + dur - (mi.intvlen*60) ;
+			lpaddr = lp_get_start_addr(0) ;
+			lplen = lp_get_tot_size(0) ;
+
+			printf("*** start=%u, end=%u, dur=%u, addr=%08X, lpsize=%d\n",
+				t0, t1, dur, (unsigned int) lpaddr, lplen) ;
+
+			sprintf(&lpfn[0], "lp_%010u-%010u.dat", t0, t1) ;
+			if ((fp = fdiropen(&outdir[0], &lpfn[0], "wb")) != NULL) {
+				rc = fwrite(lpaddr, lplen, 1, fp) ;
+				fclose(fp) ;
+				// fwrite should return the number of items written, i.e. '1' on success
+				if (rc == 1) {
+					rc = 0 ;
+				}
+				else {
+					TRACE("*** Cannot write %d bytes to %s/%s\n", lplen, outdir, lpfn) ;
+				}
+			}
+			else {
+				rc = 1 ;
+			}
+		}
+	}
+
+	if ((rc == 0) && (doxml != 0)) {
+		extern void lp_makexml(char *pth, char *xmlfn) ;
+
+		lp_makexml(&outdir[0], xmlfn) ; // xmlfn array gets generated xml file name
+
+		//
+		strcat(&outdir[0], "/") ;
+		strcat(&outdir[0], xmlfn) ;
+		if (force_post) {
+			char *post ;
+			int fsize = 0 ;
+
+			post = get_xmlbuf(outdir, &fsize) ;
+
+			if (post) {
+				if (fsize <= 0 ) {
+					fsize = strlen(post) ;
+				}
+				do_restful_post(post_url, post_bearer, post, fsize, checkpeer_flag, checkhostname_flag) ;
+				free_xmlbuf(post) ;
+			}
+		}
+
+		if (doxml == 0) { // requested to do not save the resulting XML file
+			unlink(outdir) ;
 		}
 	}
 
 	lputils_deinit() ;
 
-	// clean up for PC exit
-	TerminateN0MTimer();
-	TerminateComm();
-
+	return rc ;
 }

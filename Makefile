@@ -16,32 +16,38 @@ BUILD_SPEC     = default
 INCLUDES = -I. -Iinclude
 
 # basic compiler flags
-CFLAGS = -MD -D__WIN32__
+##CFLAGS = -MD -D__WIN32__
+CFLAGS = -Wall -MD
 
 -include $(MKINCLUDES)
 
 SOURCES =  \
 		n0mcli.c \
-		serio.c \
 		c1219.c \
 		diag.c \
 		lputils.c \
 		xmlgen.c \
+		uartio.c \
+		inifile.c \
+		config.c \
+		rest.c \
 		
 OBJS= $(SOURCES:.c=.o) \
 		
 OBJ_FILES = $(patsubst %,$(OBJDIR)/%,$(subst :, ,$(OBJS)))
 		
 INCLUDE_FILES = \
-  customtypes.h \
   se240mtr.h \
   psem.h \
-  serio.h \
   c1219.h \
   diag.h \
   lputils.h \
   xmlgen.h \
-  		
+  uartio.h \
+  inifile.h \
+  config.h \
+
+
 #Directory Search Paths
 vpath %.c $(SRCDIR) $(ADDITIONALSOURCE)
 vpath %.h $(INCDIR)
@@ -65,7 +71,7 @@ LD               = ld
 NM               = nm
 STRIP            = strip
 
-LDFLAGS = -lrpcrt4
+LDFLAGS = -luuid -lcurl
 
 # Generic Rules
 ${OBJDIR}/%.o: %.c
