@@ -16,11 +16,15 @@ void DumpHex(unsigned char *p, int length)
 	for (k = 0; k < length; k++)
 	{
 		// if new line, print it
-		if ((k & 0x0f) == 0)
-			TRACE("\n  ");
+		if ((k & 0x0f) == 0) {
+			if (k>0) {
+				TRACE("\n") ;
+			}
+			TRACE("  ");
+		}
 
 		// print element
-		TRACE("%02.2x ", p[k] & 0xff);
+		TRACE("%02x ", p[k] & 0xff);
 
 		// check if at end of line
 		if ((k & 0x0f) == 0x0f)

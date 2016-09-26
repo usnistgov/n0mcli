@@ -8,6 +8,7 @@
 #ifndef _DIAG_H_
 #define _DIAG_H_
 
+#define DIAG_PRINT(...) printf (__VA_ARGS__)
 #define TRACE(...) printf (__VA_ARGS__)
 #define VTRACE(...) if (verbose > 0) printf (__VA_ARGS__)
 #define VVTRACE(...) if (verbose > 1) printf (__VA_ARGS__)

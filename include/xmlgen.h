@@ -8,17 +8,8 @@
 #ifndef _XMLGEN_H_
 #define _XMLGEN_H_
 
-extern int getuuid(unsigned char *puuid) ;
-
-extern void xmlindent(FILE *fp, int indent) ;
-extern void xmlidtag(FILE *fp) ;
-extern void xmlintro(FILE *fp) ;
-extern void xmlinterval(FILE *fp, unsigned int start, unsigned int duration) ;
-extern void xmlireading(FILE *fp, unsigned int start, unsigned int duration, float *pval, int nval) ;
-extern void xmlfooter(FILE *fp) ;
-
-extern FILE *xmlopen(char *pdir) ;
+extern FILE *xmlopen(char *pdir, char *xmlfname) ;
 extern void xmlclose(FILE *fp) ;
-extern void xmlgen(FILE *fp) ;
+extern void xmlgen(FILE *fp, int nintervals) ;
 
 #endif

@@ -161,6 +161,7 @@ typedef struct __attribute__ ((packed)) {
 ***/
 
 //////////////////////////////////////////////////////
+//////// Table 0 - General Config
 typedef struct __attribute__((packed)) {
 	unsigned char data_order 	: 1 ;
 	unsigned char char_format 	: 3 ;
@@ -294,6 +295,289 @@ typedef enum {
 #define DEFAULT_SET_2		2	// Default set #2, Simple Demand Meter, in use
 #define DEFAULT_SET_3		3	// Default set #3, Simple TOU Meter, in use 
 #define DEFAULT_SET_4		4	// Default set #4, Simple Profile Recorder, in use
+
+//////// Table 01 - General Manufacturer Identification Table
+typedef struct  __attribute__((packed)) {
+	unsigned char manufacturer[4] ;			// Acronym for the manufacturer name.
+	unsigned char ed_model[8] ; 			// Model identifier of the End Device left justified.
+	unsigned char hw_version_number ;		// 0..255 Manufacturer's hardware version number.
+	unsigned char hw_revision_number ; 		// 0..255 Manufacturer's hardware revision number.
+	unsigned char fw_version_number ;		// 0..255 Manufacturer's firmware version number.
+	unsigned char fw_revision_number ;		// 0..255 Manufacturer's firmware revision number.
+	unsigned char mfg_serial_number[16] ;	// Manufacturer's serial number. May be a BCD[8] number, depemding on GEN_CONFIG_TBL.ID_FORM
+} MANUFACTURER_IDENT_RCD ;
+
+//////// Table 03 - End Device Mode Status Table
+typedef struct  __attribute__((packed)) {
+	unsigned char metering_flag : 1 ;			// TRUE End Device is in Metering Mode.
+	unsigned char test_mode_flag : 1 ;			// TRUE End Device is in Test Mode.
+	unsigned char meter_shop_mode_flag : 1 ;	// TRUE End Device is in Meter Shop Mode.
+	unsigned char factory_flag : 1 ;			// TRUE End Device is in Factory Mode.
+	unsigned char filler : 4 ;
+} ED_MODE_BFLD ;
+typedef struct  __attribute__((packed)) {
+	unsigned short unprogrammed_flag : 1 ; 			// TRUE End Device is not programmed or it is in a factory default state.
+	unsigned short configuration_error_flag : 1 ; 	// TRUE End Device did detect a configuration error.
+	unsigned short self_chk_error_flag : 1 ; 		// TRUE End Device did detect a self check error.
+	unsigned short ram_failure_flag : 1 ; 			// TRUE End Device did detect a RAM Memory failure.
+	unsigned short rom_failure_flag : 1 ; 			// TRUE End Device did detect a ROM Memory failure.
+	unsigned short nonvol_mem_failure_flag : 1 ; 	// TRUE End Device did detect a nonvolatile memory failure.
+	unsigned short clock_error_flag : 1 ; 			// TRUE End Device did detect a clock error.
+	unsigned short measurement_error_flag : 1 ; 	// TRUE End Device did detect a measurement element error.
+	unsigned short low_battery_flag : 1 ; 			// TRUE End Device did detect a low battery error.
+	unsigned short low_loss_potential_flag : 1 ; 	// TRUE End Device did detect a device potential that is below a predetermined value.
+	unsigned short demand_overload_flag : 1 ; 		// TRUE End Device did detect a demand threshold overload.
+	unsigned short power_failure_flag : 1 ; 		// TRUE End Device did detect a power failure.
+	unsigned short tamper_detect_flag : 1 ; 		// TRUE End Device did detect tamper activity.
+	unsigned short reverse_rotation_flag : 1 ; 		// TRUE End Device did detect reverse rotation.
+	unsigned short filler : 2 ; 					// (14..15);
+} ED_STD_STATUS1_BFLD ;
+typedef struct  __attribute__((packed)) {
+	unsigned char filler ; // Standard status code bit field 2 is a place holder for future expansion.
+} ED_STD_STATUS2_BFLD ;
+typedef struct  __attribute__((packed)) {
+	unsigned char ed_mfg_status ; // Set containing the manufacturer specific status flags.
+} ED_MFG_STATUS_RCD ;
+
+typedef struct  __attribute__((packed)) {
+	ED_MODE_BFLD ed_mode  ;
+	ED_STD_STATUS1_BFLD ed_std_status1  ;
+	ED_STD_STATUS2_BFLD ed_std_status2  ;
+	ED_MFG_STATUS_RCD ed_mfg_status  ;
+} ED_MODE_STATUS_RCD ;
+
+//////// Table 11 - Actual Data Sources Limiting Table
+typedef struct  __attribute__((packed)) {
+	unsigned char pf_exclude_flag : 1 ; // TRUE Power fail exclusion is active.
+	unsigned char reset_exclude_flag : 1 ; // TRUE Reset exclusion is in use by the End Device.
+	unsigned char block_demand_flag : 1 ; // TRUE Block demand is in use by the End Device.
+	unsigned char sliding_demand_flag : 1 ; // TRUE Sliding demand is in use by the End Device.
+	unsigned char thermal_demand_flag : 1 ; // TRUE Thermal demand is in use by the End Device.
+	unsigned char set1_present_flag : 1 ; // TRUE The End Device is using the first set of optional constants in the electric record of the CONSTANTS_TBL (Table 15).
+	unsigned char set2_present_flag : 1 ; // TRUE The End Device is using the second set of	optional constants in the electric record of the CONSTANTS_TBL (Table 15).
+	unsigned char conversion_alg_flag : 1 ; // conversion of measurements to engineering values algo(see Annex K) is implemented by this End Device.
+} SOURCE_FLAGS_BFLD ;
+
+typedef struct  __attribute__((packed)) {
+	SOURCE_FLAGS_BFLD source_flags  ;	// what demand and TOU regs functions are in use by the End Device.
+	unsigned char nbr_uom_entries ;		// Actual number of entries in UOM_ENTRY_TBL (Table 12).
+	unsigned char nbr_demand_ctrl_entries ; // Actual number of entries in the DEMAND_CONTROL_TBL (Table 13).
+	unsigned char data_ctrl_length ;	// value that determines the width in octets of an entry in the first array of the DATA_CONTROL_TBL (Table 14).
+	unsigned char nbr_data_ctrl_entries ; // Actual number of entries in the DATA_CONTROL_TBL (Table 14).
+	unsigned char nbr_constants_entries ; // Actual number of entries in the CONSTANTS_TBL (Table 15).
+	unsigned char constants_selector ; //   data structure used in the CONSTANTS_TBL (Table 15): 0 - GAS_CONSTANTS_AGA3_RCD, 1 - GAS_CONSTANTS_AGA7_RCD 2 - ELECTRIC_CONSTANTS_RCD
+	unsigned char nbr_sources ;	// Actual number of entries in the SOURCES_TBL (Table 16).
+} SOURCE_RCD ;
+
+//////// Table 12 - Units of Measure Entry Table
+/***
+UOM_ENTRY_TBL (Table 12) provides a method for describing data attributes. It may be used to tag
+data sources. One entry exists in this Table (UOM_ENTRY_TBL) only for each entry in
+SOURCES_TBL.SOURCE_LINK_RCD.UOM_ENTRY_FLAG that is set to TRUE. Therefore the
+application has to perform a “bit” walk across all UOM_ENTRY_FLAG in SOURCES_TBL that are set to
+TRUE, in order to locate the related SELECTION array Element found in this Table (UOM_ENTRY_TBL).
+***/
+
+typedef struct  __attribute__((packed)) {
+	unsigned int id_code : 8 ; // 0 Active power – W. 1 Reactive power – VAR. 2 Apparent power – VA etc.
+	unsigned int time_base : 3 ; // uint(8..10);
+	unsigned int multiplier : 3 ; // identifies the decimal scaling value to apply to the reported value after delivery to the application of all conversion constants of the tagged item
+	unsigned int q1_accountability : 1 ; // Tagged item is in quadrant 1. It shall be included accounting or measurement.
+	unsigned int q2_accountability : 1 ; // Tagged item is in quadrant 2. It shall be included accounting or measurement.
+	unsigned int q3_accountability : 1 ; // Tagged item is in quadrant 3. It shall be included accounting or measurement.
+	unsigned int q4_accountability : 1 ; // Tagged item is in quadrant 4. It shall be included accounting or measurement.
+	unsigned int net_flow_accountability : 1 ; // Net of delivered - received ...
+	unsigned int segmentation : 3 ; // uint(19..21);
+	unsigned int harmonic : 1 ; // The identified ID_CODE is a harmonic component of an associated source.
+	unsigned int id_resource : 5 ; //uint(23..27);
+	unsigned int reserved : 3 ; //fill(28..30);
+	unsigned int nfs : 1 ; //This unit of measure entry description does not follow the unit of measure definitions defined in this standard.
+} UOM_ENTRY_BFLD ;
+/***
+TYPE UOM_ENTRY_RCD = PACKED RECORD
+UOM_ENTRY : ARRAY[ACT_SOURCES_LIM_TBL.NBR_UOM_ENTRIES] OF
+UOM_ENTRY_BFLD;
+END;
+TABLE 12 UOM_ENTRY_TBL = UOM_ENTRY_RCD;
+***/
+
+//////// Table 15 - Constants Table
+/***
+ * we currently don't use Table 15 ...
+ */
+
+//////// Table 16 - Source Definition Table
+typedef struct  __attribute__((packed)) {
+	unsigned char uom_entry_flag : 1 ;	// A UOM_ENTRY_TBL (Table 12) entry is associated with this source.
+	unsigned char demand_ctrl_flag : 1 ;// A DEMAND_CONTROL_TBL (Table 13) entry is associated with this source.
+	unsigned char data_ctrl_flag : 1 ;	// A DATA_CONTROL_TBL (Table 14) entry is associated with this source.
+	unsigned char constants_flag : 1 ;	// A CONSTANTS_TBL (Table 15) entry is associated with this source.
+	unsigned char pulse_engr_flag : 1 ;	// The source is in engineering units.(in pulse units otherwise)
+	unsigned char constant_to_be_applied : 1 ; // The entry in the CONSTANTS_TBL (Table 15) if present, have to be applied
+	unsigned char filler: 2 ;
+} SOURCE_LINK_BFLD ;
+
+/***
+TYPE SOURCE_LINK_RCD = PACKED RECORD
+SOURCES_LINK : ARRAY[ACT_SOURCES_LIM_TBL.NBR_SOURCES] OF
+SOURCE_LINK_BFLD;
+END;
+TABLE 16 SOURCES_TBL = SOURCE_LINK_RCD;
+***/
+
+//////// Table 21 - Actual Register Limiting Table
+typedef struct  __attribute__((packed)) {
+	unsigned char season_info_field_flag : 1 ;	// Device is reporting the representative season in Tables in this Decade.
+	unsigned char date_time_field_flag : 1 ;	// Device is providing the date and time in Tables in this Decade.
+	unsigned char demand_reset_ctr_flag : 1 ;	// Device is counting the number of activations of Demand resets.
+	unsigned char demand_reset_lock_flag : 1 ;	// Demand reset lockout is enabled.
+	unsigned char cum_demand_flag : 1 ;			// Cumulative Demand is in use by the Device.
+	unsigned char cont_cum_demand_flag : 1 ;	// Continuous Cumulative Demand is in use by the Device.
+	unsigned char time_remaining_flag : 1 ;		// Device reports the time remaining in Demand interval.
+	unsigned char filler : 1 ;
+} REG_FUNC1_BFLD ;
+typedef struct  __attribute__((packed)) {
+	unsigned char self_read_inhibit_overflow_flag : 1 ;	// Device inhibits Self-reads once an overflow occurs.
+	unsigned char self_read_seq_nbr_flag : 1 ;	// Device is providing a Self-read sequential number.
+	unsigned char daily_self_read_flag : 1 ;	// Daily Self-reads are in use.
+	unsigned char weekly_self_read_flag : 1 ;	// Weekly Self-reads are in use.
+	unsigned char self_read_demand_reset : 2 ;	// Specifies whether the End Device will perform a Self-read on a Demand reset
+	unsigned char filler : 2 ;
+} REG_FUNC2_BFLD ;
+
+typedef struct  __attribute__((packed)) {
+	REG_FUNC1_BFLD reg_func1_flags ;
+	REG_FUNC2_BFLD reg_func2_flags ;
+	unsigned char nbr_self_reads ;			// Number of Self-reads in use.
+	unsigned char nbr_summations ;			// Number of summation Registers in each data block
+	unsigned char nbr_demands ;				// Number of Demand Registers in each data block.
+	unsigned char nbr_coin_values ;			// Number of coincident values saved in each data block.
+	unsigned char nbr_occur ;				// Number of occurrences stored for a particular selection.
+	unsigned char nbr_tiers ;				// Number of tiers in use.
+	unsigned char nbr_present_demands ;		// Number of present demand values that are stored.
+	unsigned char nbr_present_values ;		// Number of present values that are stored.
+} REGS_RCD ;
+
+//////// Table 22 - Data Selection Table
+/***
+DATA_SELECTION_TBL (Table 22) contains grouped lists of source indices. These indices point
+towards Array elements in SOURCES_TBL (Table 16) when Table 22 is present. These lists are used to
+build the Table that contains the data to be captured. The groupings are described below.
+Global Default Table Property Overrides: Role=“CONTROL”
+Table 22 Type Definitions
+TYPE DATA_SELECTION_RCD = PACKED RECORD
+	SUMMATION_SELECT : ARRAY[ACT_REGS_TBL.NBR_SUMMATIONS] OF STD.SOURCE_SELECT_RCD;
+	DEMAND_SELECT : ARRAY[ACT_REGS_TBL.NBR_DEMANDS] OF STD.SOURCE_SELECT_RCD;
+	MIN_OR_MAX_FLAGS : SET((ACT_REGS_TBL.NBR_DEMANDS+7)/8);
+	COINCIDENT_SELECT : ARRAY[ACT_REGS_TBL.NBR_COIN_VALUES] OF STD.SOURCE_SELECT_RCD;
+	COIN_DEMAND_ASSOC : ARRAY[ACT_REGS_TBL.NBR_COIN_VALUES] OF UINT8;
+END;
+
+SUMMATION_SELECT
+  List of source selectors that groups together
+  bulk/energy/summation that are associated with
+  the SUMMATIONS defined in this decade.
+DEMAND_SELECT
+  List of source selectors that groups together
+  demand sources that are associated with
+  DEMANDS defined in this decade.
+MIN_OR_MAX_FLAGS
+  SET of bit flags, each corresponding to an entry
+  in DEMAND_SELECT.
+  FALSE Indicates that the associated
+    DEMAND_SELECT entry is a minimum.
+  TRUE Indicates that the associated
+    DEMAND_SELECT entry is a maximum.
+COINCIDENT_SELECT
+  Data source selectors for quantites to be placed
+  in the COINCIDENTS array of the Current
+  Register Data Table (Table 23).
+COIN_DEMAND_ASSOC
+  Each entry corresponds to an entry in
+  COINCIDENT_SELECT and provides an index
+  into DEMAND_SELECT identifying the Demand
+  for which this coincident value is taken.
+
+***/
+
+//////// Table 23 - Current Register Data Table
+/***
+contains the current Register data. “Current” is with respect to
+the previous demand reset, season or Self-read. Table 23 is intended for billing purposes.
+
+Table 23 Type Definitions
+TYPE COINCIDENTS_RCD = PACKED RECORD
+	COINCIDENT_VALUES : ARRAY[ACT_REGS_TBL.NBR_OCCUR] OF NI_FMAT2;
+END;
+TYPE DEMANDS_RCD = PACKED RECORD
+	IF ACT_REGS_TBL.DATE_TIME_FIELD_FLAG THEN
+		EVENT_TIME : ARRAY[ACT_REGS_TBL.NBR_OCCUR] OF STIME_DATE;
+	END;
+	IF ACT_REGS_TBL.CUM_DEMAND_FLAG THEN
+		CUM_DEMAND : NI_FMAT1;
+	END;
+	IF ACT_REGS_TBL.CONT_CUM_DEMAND_FLAG THEN
+		CONT_CUM_DEMAND : NI_FMAT1;
+	END;
+	DEMAND : ARRAY[ACT_REGS_TBL.NBR_OCCUR] OF NI_FMAT2;
+END;
+
+TYPE DATA_BLK_RCD = PACKED RECORD
+	SUMMATIONS : ARRAY[ACT_REGS_TBL.NBR_SUMMATIONS] OF NI_FMAT1;
+	DEMANDS : ARRAY[ACT_REGS_TBL.NBR_DEMANDS] OF DEMANDS_RCD;
+	COINCIDENTS : ARRAY[ACT_REGS_TBL.NBR_COIN_VALUES] OF COINCIDENTS_RCD;
+END;
+
+TYPE REGISTER_DATA_RCD = PACKED RECORD
+	IF ACT_REGS_TBL.DEMAND_RESET_CTR_FLAG THEN
+		NBR_DEMAND_RESETS : UINT8;
+	END;
+	TOT_DATA_BLOCK : DATA_BLK_RCD;
+	TIER_DATA_BLOCK : ARRAY[ACT_REGS_TBL.NBR_TIERS] OF DATA_BLK_RCD;
+END;
+
+TABLE 23 CURRENT_REG_DATA_TBL = REGISTER_DATA_RCD;
+***/
+
+//////// Table 27 - Present Register Selection Table
+/***
+provides selections to sources of present demands
+and present values. These indices point towards array elements in SOURCES_TBL (Table 16) when
+Table 16 is present. The values selected are available in PRESENT_REGISTER_DATA_TBL (Table
+28). Table 27 is used to select sources for Table 28, which is continually updated.
+
+Table 27 Type Definitions
+TYPE PRESENT_REGISTER_SELECT_RCD = PACKED RECORD
+	PRESENT_DEMAND_SELECT : ARRAY[ACT_REGS_TBL.NBR_PRESENT_DEMANDS] OF STD.SOURCE_SELECT_RCD;
+	PRESENT_VALUE_SELECT : ARRAY[ACT_REGS_TBL.NBR_PRESENT_VALUES] OF
+	STD.SOURCE_SELECT_RCD;
+END;
+
+TABLE 27 PRESENT_REGISTER_SELECT_TBL = PRESENT_REGISTER_SELECT_RCD;
+***/
+
+//////// Table 28 - Present Register Data Table
+/***
+contains the present demand and values as selected by
+the PRESENT_REGISTER_SELECT_TBL (Table 27). Table 28 is continually updated.
+
+Table 28 Type Definitions
+TYPE PRESENT_DEMAND_RCD = PACKED RECORD
+	IF ACT_REGS_TBL.TIME_REMAINING_FLAG THEN
+		TIME_REMAINING : TIME;
+	END;
+	DEMAND_VALUE : NI_FMAT2;
+END;
+
+TYPE PRESENT_REGISTER_DATA_RCD = PACKED RECORD
+	PRESENT_DEMAND : ARRAY[ACT_REGS_TBL.NBR_PRESENT_DEMANDS] OF PRESENT_DEMAND_RCD;
+	PRESENT_VALUE : ARRAY[ACT_REGS_TBL.NBR_PRESENT_VALUES] OF NI_FMAT1;
+END;
+
+TABLE 28 PRESENT_REGISTER_DATA_TBL = PRESENT_REGISTER_DATA_RCD;
+***/
+
+
 
 //////////////////// Table 52 - Clock
 
@@ -692,8 +976,8 @@ extern unsigned char wrongcode[] ;
 extern char outdir[] ;
 
 extern unsigned char *dsclookup(int n) ;
-extern int parse_request(unsigned char *preq, int len) ;
-extern int parse_response(unsigned char *prsp, int len, int mrc) ; // mrc -- matching request code(zero means N/A)
+extern int parse_request(unsigned char *preq, int len, int vlevel) ;
+extern int parse_response(unsigned char *prsp, int len, int mrc, int vlevel) ; // mrc -- matching request code(zero means N/A)
 
 extern void dirunlink(char *pdir, char *pfname) ;
 extern FILE *fdiropen(char *pdir, char *pfname, char *pmode) ;

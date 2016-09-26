@@ -48,8 +48,10 @@
 */
 
 
-#ifndef __PSEM_H
-#define __PSEM_H
+#ifndef _PSEM_H_
+#define _PSEM_H_
+
+#include <stdint.h>
 
 
 typedef enum {
@@ -117,7 +119,7 @@ typedef enum {
 #define GOODFCS         0x470f  // Final good FCS value
 
 // Data link and application timing 
-#define INTER_CHARACTER_TIME_OUT	5 
+#define INTER_CHARACTER_TIME_OUT	5
 #define CHANNEL_TRAFFIC_TIME_OUT	60
 #define WAITFORACK					20
 #define WAITFORRESPONSE				20
@@ -130,13 +132,13 @@ typedef enum {
 #define PSEM_RSVD 0
 
 typedef struct {
-	BYTE stp;			// start flag PSEM_STP
-	BYTE fill;			// reserved for MFG, default 0
-	BYTE ctrl;			// control byte
-	BYTE seq;			// sequence number
-	BYTE lengthmsb;		// length of message in bytes
-	BYTE lengthlsb;		// length of message in bytes
-	BYTE service;	// service token
+	uint8_t stp;			// start flag PSEM_STP
+	uint8_t fill;			// reserved for MFG, default 0
+	uint8_t ctrl;			// control byte
+	uint8_t seq;			// sequence number
+	uint8_t lengthmsb;		// length of message in bytes
+	uint8_t lengthlsb;		// length of message in bytes
+	uint8_t service;	// service token
 } typePSEMHeader;		// describes the header of a PSEM frame
 
 #endif
